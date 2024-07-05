@@ -1,0 +1,95 @@
+#!/bin/bash
+
+print(){
+  printf "%s" "$1"
+}
+
+inlineeval(){
+  # a solution to capture the output of "eval" without involving a subshell or temporary files
+  # it uses one of my favorite bits of bash syntax, which i will be coining the hyperfish
+  # <(:) creates a subshell and maps it to a file descriptor. the subshell only contains the nop command ":", so it will immediately exit
+  # however, since the file descriptor is opened r/w with <>, the pipefd connecting the two processes will stay open
+  # exec {fd} assigns the file descriptor to a variable, so that we can redirect the eval output to our end of the pipe
+  # then read is used to get the output back without hanging
+  # finally, the file descriptor is closed! how fun
+  
+  local o
+  pipeout=""
+  exec {fd}<><(:)
+  eval "$1" >&$fd
+  echo -en "\0" >&$fd
+  IFS='' read -d "" -r -u $fd pipeout
+  exec {fd}>&-
+}
+
+include() {
+  local html
+  local out
+  local command
+  local template
+  TEMPLATE=""
+
+  if [[ ! -f "$1" ]]; then
+    html=$1
+  else 
+    file=$1
+    html=$(<"$file")
+  fi
+
+  firstline=${html%%$'\n'*}
+
+  if [ "$firstline" = "---" ]; then
+    html=${html#*---}
+    command=${html%%---*}
+    html=${html#*---}
+
+    eval "$command" >&2
+  fi
+  template=$TEMPLATE
+  
+  out=""
+
+  while [[ "$html" = *'<!--$'* ]]; do
+    out=${out}${html%%<!--\$*}
+    html=${html#*<!--\$}
+    command=${html%%-->*}
+    html=${html#*-->}
+
+    inlineeval "$command"
+    out+=${pipeout}
+  done
+
+  html=$out$html
+  out=""
+
+  while [[ "$html" = *'$'* ]]; do
+    out=${out}${html%%\$*}
+    html=${html#*\$}
+    var=${html%%\$*}
+    html=${html#*\$}
+    out+=$(eval "print \"\$$var\"")
+  done
+
+  out+=$html
+
+  if [ -n "$template" ]; then
+    CONTENT=$out
+    include "$template"
+  else
+    echo -n "$out"
+  fi
+}
+
+
+if [ "$0" = "${BASH_SOURCE[0]}" ]; then
+  while read -r page; do
+    relative_path=${page#pages/}
+    echo "generating $page"
+    mkdir -p "dist/$(dirname "$relative_path")"
+
+    noext=${relative_path%.*}
+
+    (include "$page" > "dist/${noext}.html")
+
+  done <<< "$(find pages -type f)"
+fi
